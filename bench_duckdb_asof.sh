@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# bench_duckdb_window.sh - DuckDB window-function over UNION ALL.
-# Closest structural analog to a true WINDOW JOIN: tag trades and prices into
-# a single stream, run a windowed avg over (sym, ts), keep trade rows only.
+# bench_duckdb_asof.sh - DuckDB ASOF cumulative-diff rewrite.
+# Builds a per-symbol cumulative sum/count over prices, then uses two
+# ASOF LEFT JOINs to look up the cumulative state at the window high
+# boundary and just-before the low boundary; the per-trade aggregate is
+# the difference. Matches WINDOW JOIN semantics exactly: both window
+# bounds inclusive, EXCLUDE PREVAILING (when no in-window price exists,
+# hi and lo land on the same row so cum-cum and n-n both go to zero,
+# NULLIF turns the divide into NULL).
+#
+# Reuses the .duckdb file from bench_duckdb_window.sh if data is present.
 set -euo pipefail
 
 DB_FILE="${DB_FILE:-bench.duckdb}"
-TIMES_FILE="${TIMES_FILE:-duck.times.window}"
+TIMES_FILE="${TIMES_FILE:-duck.times.asof}"
 RUNS="${RUNS:-3}"
 TIMEOUT_S="${TIMEOUT_S:-1800}"
 DATA_DIR="${DATA_DIR:-/tmp}"
@@ -53,28 +60,36 @@ else
   echo "[load] tables already populated ($trades + $prices rows), skipping"
 fi
 
-# Window function over UNION ALL. DuckDB accepts INTERVAL offsets in RANGE
-# BETWEEN directly (no microsecond cast needed, unlike ClickHouse).
+# ASOF cumulative-diff: prefix-sums on prices, then two ASOF LEFT JOINs
+# bracket each trade's [-1s, +1s] window. avg = (sum_hi - sum_lo) /
+# (count_hi - count_lo); NULLIF turns a zero count diff into NULL,
+# implementing EXCLUDE PREVAILING for trades with no in-window price.
 read -r -d '' QUERY <<SQL || true
 SET memory_limit = '$MEMORY_LIMIT';
 SET temp_directory = '$DUCKDB_TEMP_DIR';
-WITH stream AS (
-  SELECT ts, sym, bid, ask, FALSE AS is_trade FROM prices
-  UNION ALL
-  SELECT ts, symbol AS sym, NULL::DOUBLE AS bid, NULL::DOUBLE AS ask, TRUE FROM trades
+WITH price_cum AS (
+  SELECT
+    sym, ts,
+    SUM(bid)   OVER w AS cum_bid,
+    SUM(ask)   OVER w AS cum_ask,
+    COUNT(bid) OVER w AS n_bid,
+    COUNT(ask) OVER w AS n_ask
+  FROM prices
+  WINDOW w AS (PARTITION BY sym ORDER BY ts
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 )
-SELECT ts, sym AS symbol, avg_bid, avg_ask FROM (
-  SELECT ts, sym, is_trade,
-         avg(bid) OVER w AS avg_bid,
-         avg(ask) OVER w AS avg_ask
-  FROM stream
-  WINDOW w AS (
-    PARTITION BY sym
-    ORDER BY ts
-    RANGE BETWEEN INTERVAL 1 SECOND PRECEDING AND INTERVAL 1 SECOND FOLLOWING
-  )
-) sub
-WHERE is_trade
+SELECT ts, symbol, avg_bid, avg_ask FROM (
+  SELECT t.ts AS ts, t.symbol AS symbol,
+    (hi.cum_bid - COALESCE(lo.cum_bid, 0))
+      / NULLIF(hi.n_bid - COALESCE(lo.n_bid, 0), 0) AS avg_bid,
+    (hi.cum_ask - COALESCE(lo.cum_ask, 0))
+      / NULLIF(hi.n_ask - COALESCE(lo.n_ask, 0), 0) AS avg_ask
+  FROM trades t
+  ASOF LEFT JOIN price_cum hi
+    ON hi.sym = t.symbol AND hi.ts <= t.ts + INTERVAL 1 SECOND
+  ASOF LEFT JOIN price_cum lo
+    ON lo.sym = t.symbol AND lo.ts <  t.ts - INTERVAL 1 SECOND
+)
 ORDER BY (avg_bid + avg_ask) DESC
 LIMIT 10;
 SQL
@@ -92,5 +107,5 @@ for i in $(seq 1 "$RUNS"); do
 done
 
 echo
-echo "=== DuckDB (window function over UNION ALL) ==="
+echo "=== DuckDB (ASOF cumulative-diff) ==="
 echo "best wall time: $(grep -E '^[0-9]+\.[0-9]+' "$TIMES_FILE" | sort -n | head -1 || echo DNF)"

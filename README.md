@@ -91,10 +91,9 @@ ClickHouse installers need `sudo`.
 
 ### Run the benchmark
 
-One script per row of the comparison table. Scripts that share schema
-and data (Timescale lateral vs range-join, ClickHouse range-join vs
-window, DuckDB range-join vs window) skip the load step if the data is
-already present.
+One script per row of the comparison table. The two Timescale scripts
+share schema and data and skip the load step if the data is already
+present.
 
 - [`bench_questdb.sh`](bench_questdb.sh) - native `WINDOW JOIN`. Runs
   both the parallel and single-threaded configurations in one go,
@@ -106,17 +105,21 @@ already present.
   `(sym, ts DESC)` index, then runs the query.
 - [`bench_timescale_rangejoin.sh`](bench_timescale_rangejoin.sh) - range
   join + GROUP BY rewrite with all parallel knobs forced.
-- [`bench_clickhouse.sh`](bench_clickhouse.sh) - range join + GROUP BY
-  on `MergeTree ORDER BY (sym, ts)`. CSV ingest uses
-  `--date_time_input_format=best_effort` because the CSV has ISO-8601
-  timestamps with `+00:00` suffix.
 - [`bench_clickhouse_window.sh`](bench_clickhouse_window.sh) - window
   function over `UNION ALL` of trades + prices, with timestamps
   pre-converted to microseconds (ClickHouse requires numeric range
-  offsets).
-- [`bench_duckdb.sh`](bench_duckdb.sh) - range join + GROUP BY.
+  offsets). Loads its own data into a `MergeTree ORDER BY (sym, ts)`
+  table; CSV ingest uses `--date_time_input_format=best_effort` because
+  the CSV has ISO-8601 timestamps with `+00:00` suffix.
 - [`bench_duckdb_window.sh`](bench_duckdb_window.sh) - window function
   over `UNION ALL`. DuckDB accepts `INTERVAL` range offsets natively.
+  Loads its own data into a self-contained `.duckdb` file.
+- [`bench_duckdb_asof.sh`](bench_duckdb_asof.sh) - ASOF cumulative-diff
+  rewrite: per-symbol prefix sums over `prices`, then two `ASOF LEFT JOIN`s
+  bracket each trade's window so the per-trade aggregate is a subtraction.
+  Matches QuestDB's WINDOW JOIN semantics exactly (both bounds inclusive,
+  EXCLUDE PREVAILING). Shares the `.duckdb` file with
+  `bench_duckdb_window.sh`.
 - [`generate_csv.py`](generate_csv.py) - shared CSV generator that
   mimics QuestDB's zipfian symbol distribution. Used by all non-QuestDB
   loaders. The QuestDB script generates data in-database via
@@ -138,13 +141,12 @@ QDB_HOME=$HOME/questdb-9.3.5 ./bench_questdb.sh
 PGPASSWORD=bench ./bench_timescale.sh
 PGPASSWORD=bench ./bench_timescale_rangejoin.sh
 
-# DuckDB (range-join + window rewrite)
+# DuckDB (window + ASOF rewrites)
 export PATH="$HOME/.local/bin:$PATH"
-./bench_duckdb.sh
 ./bench_duckdb_window.sh
+./bench_duckdb_asof.sh
 
-# ClickHouse (range-join + window rewrite)
-./bench_clickhouse.sh
+# ClickHouse (window rewrite)
 ./bench_clickhouse_window.sh
 ```
 
@@ -179,3 +181,11 @@ PostgreSQL/Timescale-specific:
 | `PGHOST` / `PGPORT` / `PGUSER` | `localhost` / `5433` / `postgres` | libpq connection |
 | `PGPASSWORD` | (required) | Set to the password from `install_timescale.sh` |
 | `DB` | `bench` | Database name |
+
+DuckDB-specific (`bench_duckdb_window.sh`, `bench_duckdb_asof.sh`):
+
+| Var | Default | Effect |
+| --- | ------- | ------ |
+| `DB_FILE` | `bench.duckdb` | DuckDB database file (shared across DuckDB scripts) |
+| `MEMORY_LIMIT` | `50GB` | Per-query memory budget passed via `SET memory_limit` |
+| `DUCKDB_TEMP_DIR` | `$DATA_DIR/duck_tmp` | Spill directory passed via `SET temp_directory`; point at a fast disk |

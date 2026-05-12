@@ -4,23 +4,56 @@
 # a single stream, run a windowed avg over (sym, ts) on the unioned stream,
 # keep only the trade rows. ClickHouse window functions require numeric range
 # offsets, so timestamps are pre-converted to microseconds.
-#
-# Assumes bench_clickhouse.sh has already loaded the data (same tables).
 set -euo pipefail
 
 TIMES_FILE="${TIMES_FILE:-ch.times.window}"
 RUNS="${RUNS:-3}"
 TIMEOUT_S="${TIMEOUT_S:-1800}"
+DATA_DIR="${DATA_DIR:-/tmp}"
 N_TRADES="${N_TRADES:-50000000}"
 N_PRICES="${N_PRICES:-150000000}"
 rm -f "$TIMES_FILE"
 
-# Verify the data is loaded.
+# ---- schema + load (idempotent) ----
 trades=$(clickhouse-client --query "SELECT count() FROM trades" 2>/dev/null || echo 0)
 prices=$(clickhouse-client --query "SELECT count() FROM prices" 2>/dev/null || echo 0)
+
 if [ "$trades" != "$N_TRADES" ] || [ "$prices" != "$N_PRICES" ]; then
-  echo "Data not loaded ($trades + $prices). Run bench_clickhouse.sh first." >&2
-  exit 1
+  echo "[setup] creating tables"
+  clickhouse-client --multiquery --query "
+    DROP TABLE IF EXISTS trades;
+    DROP TABLE IF EXISTS prices;
+    CREATE TABLE trades (
+        symbol LowCardinality(String),
+        side   LowCardinality(String),
+        price  Float64,
+        amount Float64,
+        ts     DateTime64(6)
+    ) ENGINE = MergeTree ORDER BY (symbol, ts);
+    CREATE TABLE prices (
+        ts  DateTime64(6),
+        sym LowCardinality(String),
+        bid Float64,
+        ask Float64
+    ) ENGINE = MergeTree ORDER BY (sym, ts);"
+
+  # Atomic CSV generation
+  [ -s "$DATA_DIR/trades.csv" ] || \
+    { python3 ./generate_csv.py trades "$N_TRADES" > "$DATA_DIR/trades.csv.tmp" \
+      && mv "$DATA_DIR/trades.csv.tmp" "$DATA_DIR/trades.csv"; }
+  [ -s "$DATA_DIR/prices.csv" ] || \
+    { python3 ./generate_csv.py prices "$N_PRICES" > "$DATA_DIR/prices.csv.tmp" \
+      && mv "$DATA_DIR/prices.csv.tmp" "$DATA_DIR/prices.csv"; }
+
+  echo "[load] inserting CSVs (5-15 min)"
+  # date_time_input_format=best_effort needed for the +00:00 TZ suffix our
+  # CSV emits; ClickHouse's default DateTime64 parser rejects it otherwise.
+  clickhouse-client --date_time_input_format=best_effort \
+    --query "INSERT INTO trades FORMAT CSV" < "$DATA_DIR/trades.csv"
+  clickhouse-client --date_time_input_format=best_effort \
+    --query "INSERT INTO prices FORMAT CSV" < "$DATA_DIR/prices.csv"
+else
+  echo "[load] tables already populated ($trades + $prices rows), skipping"
 fi
 
 # Window function over UNION ALL. Trades come in with NULL bid/ask so

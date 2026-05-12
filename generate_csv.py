@@ -8,9 +8,11 @@ Usage:
 Notes:
 - The QuestDB SQL uses rnd_symbol_zipf(1000, 2.0); this generator uses a
   Zipf(2.0) distribution truncated to 1000 distinct symbols.
-- Timestamps for `trades` start at 2025-01-01T00:00:00 and step by 172us.
-- Timestamps for `prices` start at 2024-12-31T23:00:00, step by 1us, and
-  receive a uniform jitter of [-20us, +20us].
+- Timestamps for `trades` start at 2025-01-01T00:00:00 and step by 1728us
+  (50M rows span exactly one day, matching bench_questdb.sh).
+- Timestamps for `prices` start at 2024-12-31T23:00:00, step by 600us, and
+  receive a uniform jitter of [-20us, +20us] (150M rows span ~25h, matching
+  bench_questdb.sh).
 
 Output schema (CSV, no header):
   trades: symbol, side, price, amount, ts
@@ -61,7 +63,7 @@ def gen_trades(n: int, out):
     syms = make_symbols(N_SYMBOLS)
     sides = ("buy", "sell")
     t0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    step = timedelta(microseconds=172)
+    step = timedelta(microseconds=1728)
     w = csv.writer(out)
     for i in range(n):
         sym = syms[sample_zipf(cum, rng)]
@@ -81,7 +83,7 @@ def gen_prices(n: int, out):
     w = csv.writer(out)
     for x in range(1, n + 1):
         jitter = rng.randint(-20, 20)
-        ts = t0 + timedelta(microseconds=60 * x + jitter)
+        ts = t0 + timedelta(microseconds=600 * x + jitter)
         sym = syms[sample_zipf(cum, rng)]
         bid = rng.random() * 10 + 5
         ask = rng.random() * 10 + 5

@@ -43,10 +43,10 @@ SELECT ts, symbol, avg_bid, avg_ask FROM (
   LEFT JOIN prices p
     ON p.sym = t.symbol
    AND p.ts >= t.ts - INTERVAL '1 second'
-   AND p.ts <  t.ts + INTERVAL '1 second'
+   AND p.ts <= t.ts + INTERVAL '1 second'
   GROUP BY t.ts, t.symbol
 ) sub
-ORDER BY (avg_bid + avg_ask) DESC NULLS LAST
+ORDER BY (avg_bid + avg_ask) DESC
 LIMIT 10;
 SQL
 

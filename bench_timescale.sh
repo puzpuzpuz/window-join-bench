@@ -84,10 +84,10 @@ SELECT ts, symbol, avg_bid, avg_ask FROM (
     FROM prices p
     WHERE p.sym  = t.symbol
       AND p.ts  >= t.ts - INTERVAL '1 second'
-      AND p.ts  <  t.ts + INTERVAL '1 second'
+      AND p.ts  <= t.ts + INTERVAL '1 second'
   ) w ON true
 ) sub
-ORDER BY (avg_bid + avg_ask) DESC NULLS LAST
+ORDER BY (avg_bid + avg_ask) DESC
 LIMIT 10;
 SQL
 
