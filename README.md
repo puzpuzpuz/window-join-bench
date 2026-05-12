@@ -51,8 +51,8 @@ this box.
 | ---------- | ------- |
 | QuestDB    | 9.3.5   |
 | TimescaleDB | 2.26.x on PostgreSQL 17 |
-| DuckDB     | 1.2.0   |
-| ClickHouse | 25.3    |
+| DuckDB     | 1.5.2   |
+| ClickHouse | 26.4    |
 
 ## Methodology
 

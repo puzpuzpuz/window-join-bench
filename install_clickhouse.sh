@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# install_clickhouse.sh - install and start ClickHouse 25.3 on Ubuntu 24.04
+# install_clickhouse.sh - install and start ClickHouse 26.4 on Ubuntu 24.04
 # from the official apt repository.
 # Idempotent: re-runs are harmless.
 set -euo pipefail
 
-CH_VERSION="${CH_VERSION:-25.3.*}"
+CH_VERSION="${CH_VERSION:-26.4.*}"
 
 if ! command -v sudo >/dev/null; then
   echo "this script uses sudo; run as a user with sudo rights" >&2

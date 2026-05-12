@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# install_duckdb.sh - install the DuckDB 1.2.0 CLI from the official release.
+# install_duckdb.sh - install the DuckDB 1.5.2 CLI from the official release.
 # DuckDB is embedded; there is no server to start. The script just drops the
 # `duckdb` binary into INSTALL_DIR and verifies the version.
 set -euo pipefail
 
-VERSION="${DUCKDB_VERSION:-1.2.0}"
+VERSION="${DUCKDB_VERSION:-1.5.2}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 case "$(uname -s)-$(uname -m)" in
