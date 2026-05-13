@@ -25,7 +25,7 @@ the canonical WINDOW JOIN query.
     FROM trades t
     WINDOW JOIN prices p
       ON p.sym = t.symbol
-      RANGE BETWEEN '1' second PRECEDING AND '1' second FOLLOWING
+      RANGE BETWEEN 1 second PRECEDING AND 1 second FOLLOWING
       EXCLUDE PREVAILING
   )
   ORDER BY avg_bid + avg_ask DESC
@@ -105,21 +105,17 @@ present.
   `(sym, ts DESC)` index, then runs the query.
 - [`bench_timescale_rangejoin.sh`](bench_timescale_rangejoin.sh) - range
   join + GROUP BY rewrite with all parallel knobs forced.
-- [`bench_clickhouse_window.sh`](bench_clickhouse_window.sh) - window
-  function over `UNION ALL` of trades + prices, with timestamps
-  pre-converted to microseconds (ClickHouse requires numeric range
-  offsets). Loads its own data into a `MergeTree ORDER BY (sym, ts)`
-  table; CSV ingest uses `--date_time_input_format=best_effort` because
-  the CSV has ISO-8601 timestamps with `+00:00` suffix.
-- [`bench_duckdb_window.sh`](bench_duckdb_window.sh) - window function
-  over `UNION ALL`. DuckDB accepts `INTERVAL` range offsets natively.
-  Loads its own data into a self-contained `.duckdb` file.
-- [`bench_duckdb_asof.sh`](bench_duckdb_asof.sh) - ASOF cumulative-diff
+- [`bench_clickhouse_asof.sh`](bench_clickhouse_asof.sh) - ASOF cumulative-diff
   rewrite: per-symbol prefix sums over `prices`, then two `ASOF LEFT JOIN`s
   bracket each trade's window so the per-trade aggregate is a subtraction.
   Matches QuestDB's WINDOW JOIN semantics exactly (both bounds inclusive,
-  EXCLUDE PREVAILING). Shares the `.duckdb` file with
-  `bench_duckdb_window.sh`.
+  EXCLUDE PREVAILING). Loads its own data into a
+  `MergeTree ORDER BY (sym, ts)` table; CSV ingest uses
+  `--date_time_input_format=best_effort` because the CSV has ISO-8601
+  timestamps with `+00:00` suffix.
+- [`bench_duckdb_asof.sh`](bench_duckdb_asof.sh) - same ASOF cumulative-diff
+  rewrite, ported to DuckDB. Loads its own data into a self-contained
+  `.duckdb` file.
 - [`generate_csv.py`](generate_csv.py) - shared CSV generator that
   mimics QuestDB's zipfian symbol distribution. Used by all non-QuestDB
   loaders. The QuestDB script generates data in-database via
@@ -141,13 +137,12 @@ QDB_HOME=$HOME/questdb-9.3.5 ./bench_questdb.sh
 PGPASSWORD=bench ./bench_timescale.sh
 PGPASSWORD=bench ./bench_timescale_rangejoin.sh
 
-# DuckDB (window + ASOF rewrites)
+# DuckDB (ASOF rewrite)
 export PATH="$HOME/.local/bin:$PATH"
-./bench_duckdb_window.sh
 ./bench_duckdb_asof.sh
 
-# ClickHouse (window rewrite)
-./bench_clickhouse_window.sh
+# ClickHouse (ASOF rewrite)
+./bench_clickhouse_asof.sh
 ```
 
 Each script writes per-run timings to a `*.times.<rewrite>` file and
@@ -182,7 +177,7 @@ PostgreSQL/Timescale-specific:
 | `PGPASSWORD` | (required) | Set to the password from `install_timescale.sh` |
 | `DB` | `bench` | Database name |
 
-DuckDB-specific (`bench_duckdb_window.sh`, `bench_duckdb_asof.sh`):
+DuckDB-specific (`bench_duckdb_asof.sh`):
 
 | Var | Default | Effect |
 | --- | ------- | ------ |

@@ -76,7 +76,7 @@ SELECT ts, symbol, avg_bid, avg_ask FROM (
   FROM trades t
   WINDOW JOIN prices p
     ON p.sym = t.symbol
-    RANGE BETWEEN '1' second PRECEDING AND '1' second FOLLOWING
+    RANGE BETWEEN 1 second PRECEDING AND 1 second FOLLOWING
     EXCLUDE PREVAILING
 )
 ORDER BY avg_bid + avg_ask DESC

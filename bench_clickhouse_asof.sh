@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# bench_clickhouse_window.sh - ClickHouse window-function over UNION ALL.
-# Closest structural analog to a true WINDOW JOIN: tag trades and prices into
-# a single stream, run a windowed avg over (sym, ts) on the unioned stream,
-# keep only the trade rows. ClickHouse window functions require numeric range
-# offsets, so timestamps are pre-converted to microseconds.
+# bench_clickhouse_asof.sh - ClickHouse ASOF cumulative-diff rewrite.
+# Builds a per-symbol cumulative sum/count over prices, then uses two
+# ASOF LEFT JOINs to look up the cumulative state at the window high
+# boundary and just-before the low boundary; the per-trade aggregate is
+# the difference. Matches WINDOW JOIN semantics exactly: both window
+# bounds inclusive, EXCLUDE PREVAILING (when no in-window price exists,
+# hi and lo land on the same row so cum-cum and n-n both go to zero,
+# nullIf turns the divide into NULL).
+#
+# ClickHouse ASOF JOIN uses `left_expr OP right_col` to pick the closest
+# right row, so the inequalities are flipped relative to the DuckDB
+# version: `hi.ts <= t.ts + 1s` becomes `(t.ts + 1s) >= hi.ts`, and
+# `lo.ts < t.ts - 1s` becomes `(t.ts - 1s) > lo.ts`.
 set -euo pipefail
 
-TIMES_FILE="${TIMES_FILE:-ch.times.window}"
+TIMES_FILE="${TIMES_FILE:-ch.times.asof}"
 RUNS="${RUNS:-3}"
 TIMEOUT_S="${TIMEOUT_S:-1800}"
 DATA_DIR="${DATA_DIR:-/tmp}"
@@ -56,33 +64,37 @@ else
   echo "[load] tables already populated ($trades + $prices rows), skipping"
 fi
 
-# Window function over UNION ALL. Trades come in with NULL bid/ask so
-# avg() ignores them; the window only averages real prices. EXCLUDE PREVAILING
-# semantics are implicit because the [-1s, +1s] window has no row before its
-# lower bound to include anyway.
+# ASOF cumulative-diff: prefix-sums on prices, then two ASOF LEFT JOINs
+# bracket each trade's [-1s, +1s] window. avg = (sum_hi - sum_lo) /
+# (count_hi - count_lo); nullIf turns a zero count diff into NULL,
+# implementing EXCLUDE PREVAILING for trades with no in-window price.
 read -r -d '' QUERY <<'SQL' || true
-WITH stream AS (
-  SELECT toUnixTimestamp64Micro(ts) AS ts_us, sym, bid, ask, 0 AS is_trade
+WITH price_cum AS (
+  SELECT
+    sym,
+    toUnixTimestamp64Micro(ts) AS ts_us,
+    sum(bid)   OVER w AS cum_bid,
+    sum(ask)   OVER w AS cum_ask,
+    count(bid) OVER w AS n_bid,
+    count(ask) OVER w AS n_ask
   FROM prices
-  UNION ALL
-  SELECT toUnixTimestamp64Micro(ts) AS ts_us, symbol AS sym,
-         CAST(NULL AS Nullable(Float64)) AS bid,
-         CAST(NULL AS Nullable(Float64)) AS ask,
-         1 AS is_trade
-  FROM trades
+  WINDOW w AS (PARTITION BY sym ORDER BY ts
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
 )
-SELECT ts_us, sym AS symbol, avg_bid, avg_ask FROM (
-  SELECT ts_us, sym, is_trade,
-         avg(bid) OVER w AS avg_bid,
-         avg(ask) OVER w AS avg_ask
-  FROM stream
-  WINDOW w AS (
-    PARTITION BY sym
-    ORDER BY ts_us
-    RANGE BETWEEN 1000000 PRECEDING AND 1000000 FOLLOWING
-  )
+SELECT ts_us, symbol, avg_bid, avg_ask FROM (
+  SELECT
+    toUnixTimestamp64Micro(t.ts) AS ts_us,
+    t.symbol AS symbol,
+    (hi.cum_bid - coalesce(lo.cum_bid, 0))
+      / nullIf(hi.n_bid - coalesce(lo.n_bid, 0), 0) AS avg_bid,
+    (hi.cum_ask - coalesce(lo.cum_ask, 0))
+      / nullIf(hi.n_ask - coalesce(lo.n_ask, 0), 0) AS avg_ask
+  FROM trades t
+  ASOF LEFT JOIN price_cum hi
+    ON hi.sym = t.symbol AND (toUnixTimestamp64Micro(t.ts) + 1000000) >= hi.ts_us
+  ASOF LEFT JOIN price_cum lo
+    ON lo.sym = t.symbol AND (toUnixTimestamp64Micro(t.ts) - 1000000) >  lo.ts_us
 )
-WHERE is_trade = 1
 ORDER BY (avg_bid + avg_ask) DESC
 LIMIT 10
 SQL
@@ -100,5 +112,5 @@ for i in $(seq 1 "$RUNS"); do
 done
 
 echo
-echo "=== ClickHouse (window function over UNION ALL) ==="
+echo "=== ClickHouse (ASOF cumulative-diff) ==="
 echo "best wall time: $(grep -E '^[0-9]+\.[0-9]+' "$TIMES_FILE" | sort -n | head -1 || echo DNF)"
