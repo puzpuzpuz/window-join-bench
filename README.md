@@ -10,8 +10,9 @@ the canonical WINDOW JOIN query.
 
 - **`trades`**: 50,000,000 rows over one day. 1000 zipfian-distributed
   symbols (`rnd_symbol_zipf(1_000, 2.0)`), one row every 1728 microseconds.
-- **`prices`**: 150,000,000 rows over ~25 hours. 1000 zipfian-distributed
-  symbols, one row every 600 microseconds plus jitter.
+- **`prices`**: 150,000,000 rows over 24 hours, starting 1 second before
+  trades for full window coverage at the left edge. 1000 zipfian-distributed
+  symbols, one row every 576 microseconds plus jitter.
 - **Query**: top 10 trades by combined surrounding `avg_bid + avg_ask`,
   where each trade's `avg` / `min` / `max` of `bid` and `ask` are
   computed over the 2-second window centered on the trade timestamp,

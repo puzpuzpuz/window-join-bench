@@ -10,8 +10,8 @@ Notes:
   Zipf(2.0) distribution truncated to 1000 distinct symbols.
 - Timestamps for `trades` start at 2025-01-01T00:00:00 and step by 1728us
   (50M rows span exactly one day, matching bench_questdb.sh).
-- Timestamps for `prices` start at 2024-12-31T23:00:00, step by 600us, and
-  receive a uniform jitter of [-20us, +20us] (150M rows span ~25h, matching
+- Timestamps for `prices` start at 2024-12-31T23:59:59, step by 576us, and
+  receive a uniform jitter of [-20us, +20us] (150M rows span 24h, matching
   bench_questdb.sh).
 
 Output schema (CSV, no header):
@@ -79,11 +79,11 @@ def gen_prices(n: int, out):
     rng = random.Random(1)
     cum = zipf_table(N_SYMBOLS, ZIPF_S)
     syms = make_symbols(N_SYMBOLS)
-    t0 = datetime(2024, 12, 31, 23, tzinfo=timezone.utc)
+    t0 = datetime(2024, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
     w = csv.writer(out)
     for x in range(1, n + 1):
         jitter = rng.randint(-20, 20)
-        ts = t0 + timedelta(microseconds=600 * x + jitter)
+        ts = t0 + timedelta(microseconds=576 * x + jitter)
         sym = syms[sample_zipf(cum, rng)]
         bid = rng.random() * 10 + 5
         ask = rng.random() * 10 + 5

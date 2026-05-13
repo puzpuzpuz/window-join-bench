@@ -57,8 +57,10 @@ CREATE TABLE prices (
     ask DOUBLE
 ) timestamp(ts) PARTITION BY DAY;
 
+-- 150M prices spanning 24h to match trades. Start 1s before trades so the
+-- first trade window has full RHS coverage. Step 576us: 150M * 576us = 24h.
 INSERT INTO prices
-SELECT '2024-12-31T23'::timestamp + (600 * x) + rnd_long(-20, 20, 0),
+SELECT '2024-12-31T23:59:59'::timestamp + (576 * x) + rnd_long(-20, 20, 0),
        rnd_symbol_zipf(1000, 2.0),
        rnd_double() * 10 + 5,
        rnd_double() * 10 + 5
