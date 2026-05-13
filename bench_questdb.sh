@@ -70,9 +70,13 @@ fi
 # The outer top-N forces every join output row to be considered, but only 10
 # small rows go to the client - isolates engine cost from protocol cost.
 read -r -d '' QUERY <<'SQL' || true
-SELECT ts, symbol, avg_bid, avg_ask FROM (
+SELECT ts, symbol,
+       avg_bid, min_bid, max_bid,
+       avg_ask, min_ask, max_ask
+FROM (
   SELECT t.timestamp ts, t.symbol,
-         avg(p.bid) avg_bid, avg(p.ask) avg_ask
+         avg(p.bid) avg_bid, min(p.bid) min_bid, max(p.bid) max_bid,
+         avg(p.ask) avg_ask, min(p.ask) min_ask, max(p.ask) max_ask
   FROM trades t
   WINDOW JOIN prices p
     ON p.sym = t.symbol

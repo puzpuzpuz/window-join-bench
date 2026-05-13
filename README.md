@@ -12,16 +12,21 @@ the canonical WINDOW JOIN query.
   symbols (`rnd_symbol_zipf(1_000, 2.0)`), one row every 1728 microseconds.
 - **`prices`**: 150,000,000 rows over ~25 hours. 1000 zipfian-distributed
   symbols, one row every 600 microseconds plus jitter.
-- **Query**: top 10 trades by combined surrounding bid+ask, where each
-  trade's `avg_bid` / `avg_ask` are computed over the 2-second window
-  centered on the trade timestamp, restricted to the trade's symbol.
-  The outer top-10 forces every join output row to be considered but
-  ships only 10 small rows to the client.
+- **Query**: top 10 trades by combined surrounding `avg_bid + avg_ask`,
+  where each trade's `avg` / `min` / `max` of `bid` and `ask` are
+  computed over the 2-second window centered on the trade timestamp,
+  restricted to the trade's symbol. The outer top-10 forces every join
+  output row to be considered but ships only 10 small rows to the
+  client.
 
   ```sql
-  SELECT ts, symbol, avg_bid, avg_ask FROM (
+  SELECT ts, symbol,
+         avg_bid, min_bid, max_bid,
+         avg_ask, min_ask, max_ask
+  FROM (
     SELECT t.timestamp ts, t.symbol,
-           avg(p.bid) avg_bid, avg(p.ask) avg_ask
+           avg(p.bid) avg_bid, min(p.bid) min_bid, max(p.bid) max_bid,
+           avg(p.ask) avg_ask, min(p.ask) min_ask, max(p.ask) max_ask
     FROM trades t
     WINDOW JOIN prices p
       ON p.sym = t.symbol
@@ -32,10 +37,11 @@ the canonical WINDOW JOIN query.
   LIMIT 10;
   ```
 
-The other three engines do not have a direct WINDOW JOIN equivalent; each
-`bench_*.sh` spells the closest semantically equivalent query for that
-engine, wrapped in the same outer ORDER BY / LIMIT 10. See the blog post
-for the rewrites and why they look that way.
+The other three engines do not have a direct WINDOW JOIN equivalent;
+each `bench_*.sh` spells the closest semantically equivalent query
+for that engine, wrapped in the same outer ORDER BY / LIMIT 10. All
+rewrites have been verified bit-exact against QuestDB (within 1e-9
+FP tolerance) on a parity-scale subset.
 
 ## Hardware (this run)
 
@@ -91,35 +97,41 @@ ClickHouse installers need `sudo`.
 
 ### Run the benchmark
 
-One script per row of the comparison table. The two Timescale scripts
-share schema and data and skip the load step if the data is already
-present.
+One script per row of the comparison table.
 
 - [`bench_questdb.sh`](bench_questdb.sh) - native `WINDOW JOIN`. Runs
   both the parallel and single-threaded configurations in one go,
   toggling `cairo.sql.parallel.window.join.enabled` in `server.conf`
   between phases and restoring it at the end. Requires `QDB_HOME` to
   point at the install dir.
-- [`bench_timescale.sh`](bench_timescale.sh) - lateral subquery over a
-  hypertable. Sets up the database, hypertables, and the
-  `(sym, ts DESC)` index, then runs the query.
-- [`bench_timescale_rangejoin.sh`](bench_timescale_rangejoin.sh) - range
-  join + GROUP BY rewrite with all parallel knobs forced.
-- [`bench_clickhouse_asof.sh`](bench_clickhouse_asof.sh) - ASOF cumulative-diff
-  rewrite: per-symbol prefix sums over `prices`, then two `ASOF LEFT JOIN`s
-  bracket each trade's window so the per-trade aggregate is a subtraction.
-  Matches QuestDB's WINDOW JOIN semantics exactly (both bounds inclusive,
-  EXCLUDE PREVAILING). Loads its own data into a
-  `MergeTree ORDER BY (sym, ts)` table; CSV ingest uses
-  `--date_time_input_format=best_effort` because the CSV has ISO-8601
-  timestamps with `+00:00` suffix.
-- [`bench_duckdb_asof.sh`](bench_duckdb_asof.sh) - same ASOF cumulative-diff
-  rewrite, ported to DuckDB. Loads its own data into a self-contained
-  `.duckdb` file.
+- [`bench_timescale.sh`](bench_timescale.sh) - range-join + GROUP BY
+  rewrite with all parallel knobs forced. Sets up the database,
+  hypertables, and a `(sym, ts DESC)` index. The lateral-subquery
+  alternative was dropped: at parity scale it was an order of magnitude
+  slower than the range-join + parallel-hash-aggregate plan, and at
+  full scale both rewrites DNF.
+- [`bench_clickhouse.sh`](bench_clickhouse.sh) - window
+  function over a `UNION ALL` of trades and prices. Trade rows carry
+  NULL `bid`/`ask`, so when the window contains no in-window price the
+  aggregates are NULL - matching QuestDB's `EXCLUDE PREVAILING`. Loads
+  its own data into a `MergeTree ORDER BY (sym, ts)` table; CSV ingest
+  uses `--date_time_input_format=best_effort` because the CSV has
+  ISO-8601 timestamps with a `+00:00` suffix.
+- [`bench_duckdb.sh`](bench_duckdb.sh) - same window
+  function over `UNION ALL` rewrite, ported to DuckDB. Loads its own
+  data into a self-contained `.duckdb` file.
 - [`generate_csv.py`](generate_csv.py) - shared CSV generator that
   mimics QuestDB's zipfian symbol distribution. Used by all non-QuestDB
   loaders. The QuestDB script generates data in-database via
   `generate_series` / `long_sequence`.
+
+We previously tried `ASOF JOIN` cumulative-diff rewrites for DuckDB and
+ClickHouse (per-symbol prefix sums + two `ASOF LEFT JOIN`s bracketing
+each trade's window). They are dramatically faster than the window
+function rewrite *for `avg` alone*, because `sum` and `count` are
+prefix-sum-decomposable. They cannot handle `min` / `max`, so the
+window function rewrite is the only semantically correct shape once
+those aggregates are in the query.
 
 ## Reproducing end-to-end
 
@@ -130,19 +142,18 @@ present.
 ./install_duckdb.sh
 ./install_clickhouse.sh    # needs sudo
 
-# QuestDB (both rows)
+# QuestDB (both rows of the table)
 QDB_HOME=$HOME/questdb-9.3.5 ./bench_questdb.sh
 
-# Timescale (lateral + range-join rewrite)
+# Timescale (range-join + GROUP BY rewrite)
 PGPASSWORD=bench ./bench_timescale.sh
-PGPASSWORD=bench ./bench_timescale_rangejoin.sh
 
-# DuckDB (ASOF rewrite)
+# DuckDB (window over UNION ALL)
 export PATH="$HOME/.local/bin:$PATH"
-./bench_duckdb_asof.sh
+./bench_duckdb.sh
 
-# ClickHouse (ASOF rewrite)
-./bench_clickhouse_asof.sh
+# ClickHouse (window over UNION ALL)
+./bench_clickhouse.sh
 ```
 
 Each script writes per-run timings to a `*.times.<rewrite>` file and
@@ -177,10 +188,10 @@ PostgreSQL/Timescale-specific:
 | `PGPASSWORD` | (required) | Set to the password from `install_timescale.sh` |
 | `DB` | `bench` | Database name |
 
-DuckDB-specific (`bench_duckdb_asof.sh`):
+DuckDB-specific (`bench_duckdb.sh`):
 
 | Var | Default | Effect |
 | --- | ------- | ------ |
-| `DB_FILE` | `bench.duckdb` | DuckDB database file (shared across DuckDB scripts) |
+| `DB_FILE` | `bench.duckdb` | DuckDB database file |
 | `MEMORY_LIMIT` | `50GB` | Per-query memory budget passed via `SET memory_limit` |
 | `DUCKDB_TEMP_DIR` | `$DATA_DIR/duck_tmp` | Spill directory passed via `SET temp_directory`; point at a fast disk |
