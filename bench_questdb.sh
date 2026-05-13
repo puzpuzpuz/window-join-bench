@@ -23,7 +23,7 @@ rm -f "$TIMES_PARALLEL" "$TIMES_SERIAL"
 need_load=1
 existing_trades=$(psql "$PGURL" -tAc "SELECT count(*) FROM trades;" 2>/dev/null || echo 0)
 existing_prices=$(psql "$PGURL" -tAc "SELECT count(*) FROM prices;" 2>/dev/null || echo 0)
-if [ "$existing_trades" = "50000001" ] && [ "$existing_prices" = "150000000" ]; then
+if [ "$existing_trades" = "50000000" ] && [ "$existing_prices" = "150000000" ]; then
   echo "[load] tables already populated, skipping"
   need_load=0
 fi
@@ -41,14 +41,15 @@ CREATE TABLE trades (
     timestamp TIMESTAMP
 ) timestamp(timestamp) PARTITION BY DAY WAL;
 
--- 50M trades over 1 day (10x scaled down from blog headline)
+-- 50M trades over 1 day (10x scaled down from blog headline).
+-- Step 1728us: 50M * 1728us = 24h, first row at 2025-01-01T00:00:00.
 INSERT INTO trades
 SELECT rnd_symbol_zipf(1000, 2.0),
        rnd_symbol('buy', 'sell'),
        rnd_double() * 20 + 10,
        rnd_double() * 20 + 10,
-       generate_series
-FROM generate_series('2025-01-01', '2025-01-02', '1728u');
+       '2025-01-01'::timestamp + (1728 * (x - 1))
+FROM long_sequence(50000000);
 
 CREATE TABLE prices (
     ts  TIMESTAMP,

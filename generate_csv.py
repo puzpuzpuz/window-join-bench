@@ -41,8 +41,10 @@ def zipf_table(n: int, s: float):
 
 
 def make_symbols(n: int):
-    width = max(3, len(str(n)))
-    return [f"S{str(i).zfill(width)}" for i in range(n)]
+    # Matches QuestDB's rnd_symbol_zipf(N, ...) symbol naming: lowercase "sym"
+    # prefix, no zero-padding, indices 0..N-1. Keeps the CSV-loaded engines
+    # bit-equal to QuestDB for symbol-keyed joins.
+    return [f"sym{i}" for i in range(n)]
 
 
 def sample_zipf(cum, rng):
